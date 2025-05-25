@@ -10,7 +10,7 @@ upload_box_base_style = {
 upload_style_initial = {**upload_box_base_style, 'borderColor': '#a0a0a0'}
 upload_style_success = {**upload_box_base_style, 'borderColor': '#28a745', 'backgroundColor': '#e9f5e9'}
 upload_style_fail = {**upload_box_base_style, 'borderColor': '#dc3545', 'backgroundColor': '#fdecea'}
-upload_icon_img_style = {'height': '60px', 'width': '60px', 'objectFit': 'contain'}
+upload_icon_img_style = {'height': '150px', 'width': '150px', 'objectFit': 'contain'}
 
 # --- Cytoscape Stylesheets ---
 diagnostic_stylesheet = [
