@@ -1,5 +1,7 @@
 from dash import html, dcc
 import dash_cytoscape as cyto
+import dash_bootstrap_components as dbc # ✅ NEW IMPORT
+
 from styles.graph_styles import (
     upload_icon_img_style,
     upload_style_initial,
@@ -9,7 +11,16 @@ from styles.graph_styles import (
     actual_default_stylesheet_for_graph
 )
 
-# Modify the function signature to accept the image paths
+# Define Security Levels for the slider (MUST BE CONSISTENT)
+# This mapping needs to be available where the layout is created and where callbacks process it.
+SECURITY_LEVELS_SLIDER_MAP = {
+    0: {"label": "⬜️ Unclassified", "color": "#CCCCCC", "value": "unclassified"}, # Added "value" for internal consistency
+    1: {"label": "🟢 Green (Public)", "color": "#27AE60", "value": "green"},
+    2: {"label": "🟠 Orange (Semi-Restricted)", "color": "#F39C12", "value": "yellow"}, # Mapped to 'yellow'
+    3: {"label": "🔴 Red (Restricted)", "color": "#C0392B", "value": "red"},
+}
+
+
 def create_main_layout(app_instance, main_logo_path, icon_upload_default): 
     layout = html.Div(children=[
         html.Div(style={
@@ -35,109 +46,94 @@ def create_main_layout(app_instance, main_logo_path, icon_upload_default):
             'display': 'none', 'padding': '15px', 'backgroundColor': '#e9e9e9', 'borderRadius': '5px',
             'margin': '20px auto', 'width': '95%'
         }, children=[
-            # ✅ NEW WRAPPER DIV for mapping-ui-section to center it
-            html.Div(id='mapping-ui-section-wrapper', style={
-                'display': 'block', # Always visible when interactive-setup-container is visible
-                'width': '50%', # Adjust width as needed for centering effect
-                'margin': '0 auto', # Centers the block element
-                'paddingRight': '15px', # Retain padding
-                'borderRight': '1px solid #ccc', # Retain border
-                'boxSizing': 'border-box' # Include padding/border in width
-            }, children=[
-                html.Div(id='mapping-ui-section', style={'flex': 1}, children=[ # flex:1 might not be needed here anymore, but keeping for safety.
-                    html.H4("Step 1: Map CSV Headers", style={'textAlign': 'center'}), # ✅ Center the H4 text
-                    html.Div(id='dropdown-mapping-area'),
-                    html.Button('Confirm Header Mapping & Proceed', id='confirm-header-map-button', n_clicks=0,
-                                style={'marginTop': '15px', 'backgroundColor': '#007bff', 'color': 'white',
-                                       'padding': '8px 12px', 'border': 'none', 'borderRadius': '4px', 'display': 'none',
-                                       'marginLeft': 'auto', 'marginRight': 'auto', 'display': 'block'}) # ✅ Center the button
-                ])
+            # Step 1: Map CSV Headers - Centered
+            html.Div(id='mapping-ui-section', style={
+                'display': 'block',
+                'width': '50%',
+                'margin': '0 auto',
+                'paddingRight': '15px',
+                'borderRight': '1px solid #ccc',
+                'boxSizing': 'border-box'
+            }, children=[ 
+                html.H4("Step 1: Map CSV Headers", className="text-center"), # Use dbc for styling
+                html.Div(id='dropdown-mapping-area'),
+                html.Button('Confirm Header Mapping & Proceed', id='confirm-header-map-button', n_clicks=0,
+                            style={'marginTop': '15px', 'backgroundColor': '#007bff', 'color': 'white',
+                                   'padding': '8px 12px', 'border': 'none', 'borderRadius': '4px',
+                                   'marginLeft': 'auto', 'marginRight': 'auto', 'display': 'block'})
             ]),
 
-            # ✅ This is now the container for Step 2 ONLY, and it needs its own display control.
-            # It will be made visible by the callback when 'confirm-header-map-button' is clicked.
-            html.Div(id='entrance-verification-ui-section', style={'display': 'none', 'paddingLeft': '15px', 'flex': 1}, children=[
-                html.H4("Step 2: Facility & Door Classification Setup"),
-                dcc.RadioItems(id='manual-map-toggle',
-                               options=[{'label': 'Yes', 'value': 'yes'}, {'label': 'No', 'value': 'no'}],
-                               value='no', inline=True,
-                               labelStyle={'display': 'inline-block', 'marginRight': '10px'}),
-                html.Div(id='num-floors-input-container', style={'display': 'none', 'marginTop': '10px'}, children=[
-                    html.Label("How many floors are in the facility? "),
-                    dcc.Input(id='num-floors-input', type='number', value=1, min=1, step=1,
-                              style={'width': '60px'})
-                ]),
-                html.Div(id='door-classification-table-container', style={'display': 'none', 'marginTop': '10px'}, children=[
-                    html.H5("Classify Doors (Floor, Entry/Exit, Stairway, Security Zone)"),
-                    html.Div(id='door-classification-table',
-                             style={'maxHeight': '400px', 'overflowY': 'auto', 'border': '1px solid #ccc',
-                                    'padding': '10px', 'backgroundColor': 'white'})
-                ]),
-                html.Div(id='entrance-suggestion-controls', style={'display': 'none', 'marginTop': '10px'}, children=[
-                    html.Label("Suggestions / 'Show More' Count:", style={'marginRight': '5px'}),
-                    dcc.Input(id='top-n-entrances-input', type='number', value=5, min=1, step=1,
-                              style={'width': '50px'}),
-                    html.Button('Show More Potential Entrances/Exits', id='show-more-entrances-button', n_clicks=0,
-                                style={'marginLeft': '10px'})
-                ]),
-            ]),
+            # ✅ NEW STRUCTURE FOR STEP 2 (Facility Setup) and Step 3 (Door Classification)
+            # This is the container that will be toggled by the mapping_callbacks
+            dbc.Container(id='entrance-verification-ui-section', fluid=True, # fluid=True makes it 100% width of parent
+                          style={'display': 'none', 'padding': '0', 'margin': '0 auto', 'textAlign': 'center'}, children=[ 
+                
+                # ─────────────── Step 2: Facility Setup ───────────────
+                dbc.Card([
+                    dbc.CardHeader(html.H4("Step 2: Facility Setup", className="text-center")),
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label("How many floors are in the facility?", className="fw-bold"),
+                                dcc.Dropdown(
+                                    id="num-floors-input", # Keep original ID for callback compatibility
+                                    options=[{"label": str(i), "value": i} for i in range(1, 11)], # Up to 10 floors
+                                    value=3, # Default value
+                                    clearable=False,
+                                    style={"width": "100%", "marginBottom": "0.5rem"}
+                                ),
+                                html.Small("Count floors above ground including mezzanines and secure zones.", className="text-muted")
+                            ])
+                        ]),
+                        # The manual-map-toggle and entrance-suggestion-controls were here.
+                        # We need to decide where to place them in this new DBC Card structure.
+                        # For now, let's place manual-map-toggle here, as it pertains to setup.
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label("Enable Manual Door Classification?", className="fw-bold"),
+                                dcc.RadioItems(
+                                    id='manual-map-toggle',
+                                    options=[{'label': 'Yes', 'value': 'yes'}, {'label': 'No', 'value': 'no'}],
+                                    value='no', inline=True,
+                                    labelStyle={'display': 'inline-block', 'marginRight': '10px'},
+                                    className="my-2"
+                                ),
+                            ])
+                        ])
+                    ])
+                ], className="shadow-sm p-4 my-4 bg-white rounded"), # End Step 2 Card
 
-            # This div was originally the flex container. We need to rethink its purpose.
-            # If both Step 1 and Step 2 are part of 'interactive-setup-container',
-            # and Step 2 appears AFTER Step 1, then they should be sequential DIVs inside.
-            # So, the `html.Div` that had `display: 'flex', 'flexDirection': 'row'`
-            # should now contain only `entrance-verification-ui-section` if mapping-ui-section is outside of it.
-
-            # Re-evaluating the flow:
-            # - Initially, 'interactive-setup-container' is hidden.
-            # - 'upload-data' click makes 'interactive-setup-container' visible.
-            # - 'mapping-ui-section' (Step 1) is visible by default within it.
-            # - 'confirm-header-map-button' hides 'mapping-ui-section' and shows 'entrance-verification-ui-section'.
-            # - 'manual-map-toggle' then shows/hides elements within 'entrance-verification-ui-section'.
-
-            # Given this, Step 1 and Step 2 should be separate direct children
-            # of 'interactive-setup-container', with their visibility managed by callbacks.
-
-            # I am restructuring the 'interactive-setup-container' children slightly to enable this.
-            # The 'mapping-ui-section' is now a direct child and can be centered.
-            # The 'entrance-verification-ui-section' is also a direct child, and its visibility is controlled.
+                # ─────────────── Step 3: Door Classification (conditional visibility) ───────────────
+                # This entire card will be controlled by manual-map-toggle
+                dbc.Card(id="door-classification-table-container", # Keep original ID for callback compatibility
+                    style={'display': 'none'}, # Initially hidden, revealed by toggle_classification_tools
+                    children=[
+                        dbc.CardHeader(html.H4("Step 3: Door Classification", className="text-center")),
+                        dbc.CardBody([
+                            html.P("Assign a security level to each door below:", className="mb-4 fw-bold"),
+                            html.Div(id="door-classification-table"), # This will contain the generated rows
+                            html.Br(),
+                            # Original entrance-suggestion-controls content will go here if needed
+                            html.Div(id='entrance-suggestion-controls', style={'display': 'none', 'marginTop': '10px'}, children=[
+                                html.Label("Suggestions / 'Show More' Count:", style={'marginRight': '5px'}),
+                                dcc.Input(id='top-n-entrances-input', type='number', value=5, min=1, step=1,
+                                        style={'width': '50px'}),
+                                html.Button('Show More Potential Entrances/Exits', id='show-more-entrances-button', n_clicks=0,
+                                            style={'marginLeft': '10px'})
+                            ]),
+                            # The continue button from your sample
+                            dbc.Button("Show More Selection & Continue → Step 4", id="continue-btn", color="primary", className="w-100")
+                        ])
+                    ], className="shadow-sm p-4 my-4 bg-white rounded"), # End Step 3 Card
+            ]), # End entrance-verification-ui-section container
             
-            # The previous flex wrapper for mapping and classification is no longer needed in that form.
-            # Instead, the display:flex will apply to the direct children of interactive-setup-container if needed.
-            # BUT, since they are shown sequentially, they should be simple blocks.
-
-            # This means the `html.Div([ ... ], style={'display': 'flex', 'flexDirection': 'row'})`
-            # needs to be removed, and `mapping-ui-section` and `entrance-verification-ui-section`
-            # become direct children of `interactive-setup-container` (which is already `display:block` from `upload_callbacks`).
-
-            # Let's adjust the `interactive-setup-container`'s children directly.
-
-            # OLD structure:
-            # html.Div(id='interactive-setup-container', children=[
-            #     html.Div(style={'display': 'flex', 'flexDirection': 'row'}, children=[
-            #         html.Div(id='mapping-ui-section', ...),
-            #         html.Div(id='entrance-verification-ui-section', ...)
-            #     ])
-            # ])
-
-            # NEW desired structure for sequential display:
-            # html.Div(id='interactive-setup-container', children=[
-            #     html.Div(id='mapping-ui-section', ...),
-            #     html.Div(id='entrance-verification-ui-section', ...)
-            # ])
-
-            # Let's modify the existing 'mapping-ui-section' and 'entrance-verification-ui-section'
-            # to be direct children of 'interactive-setup-container' and give mapping-ui-section centering styles.
-            # The 'flex' styles on 'mapping-ui-section' and 'entrance-verification-ui-section' should also be removed
-            # or replaced by explicit width/centering/display.
-
-            # I will modify the 'mapping-ui-section' and 'entrance-verification-ui-section' directly
-            # by removing the `html.Div([ ... ], style={'display': 'flex', 'flexDirection': 'row'})` wrapper.
-
-            # Restructure: The mapping and classification UIs will be direct children of interactive-setup-container
-            # Each will manage its own display style.
-            # This simplifies the flow and allows independent centering of mapping-ui-section.
+            # The final "Confirm Selections & Generate" button
+            html.Button('Confirm Selections & Generate Onion Model', id='confirm-and-generate-button', n_clicks=0,
+                        style={'marginTop': '20px', 'backgroundColor': 'green', 'color': 'white',
+                               'padding': '10px 15px', 'border': 'none', 'borderRadius': '5px',
+                               'display': 'block', 'marginLeft': 'auto', 'marginRight': 'auto'})
         ]), # Close interactive-setup-container
+
 
         html.Div(id='processing-status', style={'marginTop': '10px', 'color': 'blue', 'textAlign': 'center'}),
 
@@ -182,7 +178,7 @@ def create_main_layout(app_instance, main_logo_path, icon_upload_default):
         dcc.Store(id='ranked-doors-store', storage_type='session'),
         dcc.Store(id='current-entrance-offset-store', data=0, storage_type='session'),
         dcc.Store(id='manual-door-classifications-store', storage_type='local'),
-        dcc.Store(id='num-floors-store', storage_type='session', data=1),
+        dcc.Store(id='num-floors-store', storage_type='session', data=1), # Keep original ID
         dcc.Store(id='all-doors-from-csv-store', storage_type='session'),
     ], style={'backgroundColor': '#EAEAEA', 'padding': '20px', 'minHeight': '100vh', 'fontFamily': 'Arial, sans-serif'})
 

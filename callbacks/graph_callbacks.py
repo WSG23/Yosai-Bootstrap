@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import traceback
 import sys, os
+import dash_bootstrap_components as dbc # ✅ NEW IMPORT: For using Bootstrap components
 
 # This is important for module imports. Ensure this path is correct relative to your project root.
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +44,17 @@ def fuzzy_match_columns(csv_columns, internal_keys):
                     mapping[matches2[0]] = internal_key
     return mapping
 
+# Define Security Levels for the slider here (MUST BE CONSISTENT with core_layout.py)
+SECURITY_LEVELS_SLIDER_MAP = {
+    0: {"label": "⬜️ Unclassified", "color": "#CCCCCC", "value": "unclassified"},
+    1: {"label": "🟢 Green (Public)", "color": "#27AE60", "value": "green"},
+    2: {"label": "🟠 Orange (Semi-Restricted)", "color": "#F39C12", "value": "yellow"},
+    3: {"label": "🔴 Red (Restricted)", "color": "#C0392B", "value": "red"},
+}
+# Also a reverse map for pre-selecting from stored data or converting slider output to string value
+REVERSE_SECURITY_MAP = {v['value']: k for k, v in SECURITY_LEVELS_SLIDER_MAP.items()}
+
+
 def register_graph_callbacks(app):
     # Define display names for clarity and consistency within this file
     DOORID_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['DoorID']
@@ -73,15 +85,16 @@ def register_graph_callbacks(app):
             State('uploaded-file-store', 'data'),
             State('column-mapping-store', 'data'),
             State('all-doors-from-csv-store', 'data'),
+            # ✅ UPDATED STATE IDs FOR CLASSIFICATION INPUTS
             State({'type': 'floor-select', 'index': ALL}, 'value'),
             State({'type': 'floor-select', 'index': ALL}, 'id'),
             State({'type': 'is-ee-check', 'index': ALL}, 'value'),
             State({'type': 'is-ee-check', 'index': ALL}, 'id'),
             State({'type': 'is-stair-check', 'index': ALL}, 'value'),
             State({'type': 'is-stair-check', 'index': ALL}, 'id'),
-            State({'type': 'security-level-radio', 'index': ALL}, 'value'),
-            State({'type': 'security-level-radio', 'index': ALL}, 'id'),
-            State('num-floors-store', 'data'),
+            State({'type': 'security-level-slider', 'index': ALL}, 'value'), # ✅ Changed from 'security-level-radio'
+            State({'type': 'security-level-slider', 'index': ALL}, 'id'),     # ✅ Changed from 'security-level-radio'
+            State('num-floors-input', 'value'), # ✅ Changed from 'num-floors-store'
             State('manual-map-toggle', 'value'),
             State('csv-headers-store', 'data'),
             State('manual-door-classifications-store', 'data')
@@ -90,7 +103,7 @@ def register_graph_callbacks(app):
     )
     def generate_model_final(n_clicks, file_contents_b64, stored_column_mapping_json, all_door_ids_from_store,
                              floor_values, floor_ids, is_ee_values, is_ee_ids, is_stair_values, is_stair_ids,
-                             security_values, security_ids, num_floors_from_store, manual_map_choice,
+                             security_slider_values, security_slider_ids, num_floors_from_input, manual_map_choice, # ✅ Updated input names
                              csv_headers, existing_saved_classifications_json):
 
         hide_style = UI_STYLES['hide']
@@ -115,14 +128,25 @@ def register_graph_callbacks(app):
         current_door_classifications = {}
         confirmed_entrances = []
 
-        if manual_map_choice == 'yes' and all_door_ids_from_store and floor_ids:
+        # ✅ UPDATED LOGIC TO PROCESS SLIDER VALUES
+        if manual_map_choice == 'yes' and all_door_ids_from_store: # Removed floor_ids check here as it can be empty initially
             temp = {}
-            for i in range(len(floor_ids)):
-                door_id = floor_ids[i]['index']
-                floor = floor_values[i] if floor_values and i < len(floor_values) else '1'
-                is_ee = bool(is_ee_values and i < len(is_ee_values) and 'is_ee' in is_ee_values[i])
-                is_stair = bool(is_stair_values and i < len(is_stair_values) and 'is_stair' in is_stair_values[i])
-                security = security_values[i] if security_values and i < len(security_values) else 'green'
+            # Consolidate values by door_id from respective lists
+            # It's safer to build dictionaries from the _ids and _values pairs
+            floor_map = {f_id['index']: f_val for f_id, f_val in zip(floor_ids, floor_values)}
+            is_ee_map = {ee_id['index']: 'is_ee' in ee_val for ee_id, ee_val in zip(is_ee_ids, is_ee_values)}
+            is_stair_map = {st_id['index']: 'is_stair' in st_val for st_id, st_val in zip(is_stair_ids, is_stair_values)}
+            
+            # Map slider integer value to string value (e.g., 1 -> 'green')
+            security_map_slider_to_value = {s_id['index']: SECURITY_LEVELS_SLIDER_MAP.get(s_val, {}).get("value", "unclassified")
+                                            for s_id, s_val in zip(security_slider_ids, security_slider_values)}
+
+            for door_id in all_door_ids_from_store: # Iterate through all known doors
+                # Use .get with a default to handle cases where a door might not have a classification yet
+                floor = floor_map.get(door_id, '1') # Default floor 1
+                is_ee = is_ee_map.get(door_id, False)
+                is_stair = is_stair_map.get(door_id, False)
+                security = security_map_slider_to_value.get(door_id, 'green') # Default green
 
                 temp[door_id] = {
                     'floor': str(floor),
@@ -179,26 +203,20 @@ def register_graph_callbacks(app):
                 missing_internal_keys = required_internal_keys_set - mapped_internal_keys_set
                 raise ValueError(f"Missing mapped internal keys: {', '.join(missing_internal_keys)}. Please ensure all essential columns are mapped in the dropdowns.")
 
-            # ✅ CRITICAL CHANGE: Prepare the mapping for `load_csv_event_log` to target DISPLAY NAMES.
-            # This is the crucial step. We are now sure `load_csv_event_log` expects display names for its internal checks.
+            # ✅ Prepare the mapping for `load_csv_event_log` to target DISPLAY NAMES.
             mapping_for_loader_csv_to_display = {}
             for csv_col_name, internal_key in current_mapping_csv_to_internal.items():
                 if internal_key in REQUIRED_INTERNAL_COLUMNS:
                     display_name = REQUIRED_INTERNAL_COLUMNS[internal_key]
                     mapping_for_loader_csv_to_display[csv_col_name] = display_name
                 else:
-                    # If an internal_key from current_mapping_csv_to_internal isn't in REQUIRED_INTERNAL_COLUMNS,
-                    # keep it as the internal_key itself as a fallback, or decide to drop it.
                     mapping_for_loader_csv_to_display[csv_col_name] = internal_key
 
             print(f"Mapping passed to load_csv_event_log (CSV Header -> Display Name): {mapping_for_loader_csv_to_display}")
 
-            # ✅ Now, load_csv_event_log should return a DataFrame with display-named columns.
             df_final = load_csv_event_log(csv_io_for_loader, mapping_for_loader_csv_to_display)
 
             if df_final is None:
-                # This error now specifically points to an issue within load_csv_event_log
-                # given it's supposed to return display-named columns.
                 raise ValueError(
                     "Failed to load CSV for final processing. The `load_csv_event_log` function returned None. "
                     "This strongly suggests an issue within `load_csv_event_log` itself, "
@@ -206,7 +224,7 @@ def register_graph_callbacks(app):
                     "Consider inspecting the `load_csv_event_log` function in `data_io/csv_loader.py`."
                 )
 
-            # --- Final Validation (already present, but good to keep) ---
+            # --- Final Validation ---
             missing_display_columns_in_final_df = [
                 display_name for internal_key, display_name in REQUIRED_INTERNAL_COLUMNS.items()
                 if display_name not in df_final.columns
@@ -222,7 +240,8 @@ def register_graph_callbacks(app):
 
             # --- Data Processing and Model Generation (using df_final) ---
             config = GRAPH_PROCESSING_CONFIG.copy()
-            config['num_floors'] = num_floors_from_store or GRAPH_PROCESSING_CONFIG['num_floors']
+            # ✅ Use num_floors_from_input
+            config['num_floors'] = num_floors_from_input or GRAPH_PROCESSING_CONFIG['num_floors']
 
             enriched_df, device_attrs, path_viz, all_paths = run_onion_model_processing(
                 df_final.copy(), # Pass df_final (with display names) to run_onion_model_processing
@@ -236,30 +255,28 @@ def register_graph_callbacks(app):
                 graph_elements = nodes + edges
                 current_yosai_style = show_style if graph_elements else hide_style
                 status_msg = "Graph generated!" if graph_elements else "Processed, but no graph elements to display."
-                s_tae = f"{len(df_final):,}" # Use df_final for total events if enriched_df is a subset
+                s_tae = f"{len(df_final):,}" 
 
                 # --- Update stats calculations to use display names ---
-                if not enriched_df.empty and 'Timestamp (Event Time)' in enriched_df.columns:
-                    # Ensure the timestamp column is datetime type for operations
-                    if not pd.api.types.is_datetime64_any_dtype(enriched_df['Timestamp (Event Time)']):
-                        enriched_df['Timestamp (Event Time)'] = pd.to_datetime(enriched_df['Timestamp (Event Time)'], errors='coerce')
+                if not enriched_df.empty and TIMESTAMP_COL_DISPLAY in enriched_df.columns:
+                    if not pd.api.types.is_datetime64_any_dtype(enriched_df[TIMESTAMP_COL_DISPLAY]):
+                        enriched_df[TIMESTAMP_COL_DISPLAY] = pd.to_datetime(enriched_df[TIMESTAMP_COL_DISPLAY], errors='coerce')
 
-                    min_d, max_d = enriched_df['Timestamp (Event Time)'].min(), enriched_df['Timestamp (Event Time)'].max()
+                    min_d, max_d = enriched_df[TIMESTAMP_COL_DISPLAY].min(), enriched_df[TIMESTAMP_COL_DISPLAY].max()
                     s_er = f"{min_d.strftime('%d.%m.%Y')} - {max_d.strftime('%d.%m.%Y')}" if pd.notna(min_d) and pd.notna(max_d) else "N/A"
                     s_sr = f"Date range: {s_er}"
                     
-                    # Calculate unique days from the timestamp column directly
-                    s_dd = f"Days: {enriched_df['Timestamp (Event Time)'].dt.date.nunique()}"
+                    s_dd = f"Days: {enriched_df[TIMESTAMP_COL_DISPLAY].dt.date.nunique()}"
                     
-                    if 'UserID (Person Identifier)' in enriched_df.columns:
-                        s_ut = f"Tokens: {enriched_df['UserID (Person Identifier)'].nunique()}"
+                    if USERID_COL_DISPLAY in enriched_df.columns:
+                        s_ut = f"Tokens: {enriched_df[USERID_COL_DISPLAY].nunique()}"
                     
-                    if 'DoorID (Device Name)' in enriched_df.columns:
+                    if DOORID_COL_DISPLAY in enriched_df.columns:
                         s_adt = [html.Tr([html.Td(d), html.Td(f"{c:,}", style={'textAlign': 'right'})])
-                                 for d, c in enriched_df['DoorID (Device Name)'].value_counts().nlargest(5).items()]
+                                 for d, c in enriched_df[DOORID_COL_DISPLAY].value_counts().nlargest(5).items()]
 
-                if device_attrs is not None and 'DoorID (Device Name)' in device_attrs.columns:
-                    s_nd = f"Devices: {device_attrs['DoorID (Device Name)'].nunique()}"
+                if device_attrs is not None and DOORID_COL_DISPLAY in device_attrs.columns:
+                    s_nd = f"Devices: {device_attrs[DOORID_COL_DISPLAY].nunique()}"
 
                 if not s_adt:
                     s_adt = [html.Tr([html.Td("N/A", colSpan=2)])]
@@ -321,21 +338,21 @@ def register_graph_callbacks(app):
         [
             Input('confirm-header-map-button', 'n_clicks'), # Trigger when mapping confirmed
             Input('manual-map-toggle', 'value'),            # Trigger when user selects Yes/No for manual map
-            Input('num-floors-input', 'value'),             # If changing floors affects options
+            Input('num-floors-input', 'value'),             # Trigger when num floors changes
             Input('top-n-entrances-input', 'value'),        # If 'show more' influences displayed doors
             Input('show-more-entrances-button', 'n_clicks') # Explicit button click for "show more"
         ],
         [
             State('all-doors-from-csv-store', 'data'),      # List of all doors extracted
             State('manual-door-classifications-store', 'data'), # Existing classifications
-            State('current-entrance-offset-store', 'data'), # For pagination/show more
-            State('ranked-doors-store', 'data')              # If you have pre-ranked doors for suggestions
+            State('current-entrance-offset-store', 'data'), # For pagination/show more (currently unused)
+            State('ranked-doors-store', 'data')              # If you have pre-ranked doors for suggestions (currently unused)
         ],
         prevent_initial_call=True # Only generate when inputs change
     )
     def generate_door_classification_table_content(
         n_clicks_confirm_map, manual_map_choice, num_floors, top_n_entrances, n_clicks_show_more_button,
-        all_doors_from_store_data, existing_saved_classifications, current_offset_unused_yet, ranked_doors_unused_yet # Unused states can be removed if not needed for first pass
+        all_doors_from_store_data, existing_saved_classifications, current_offset_unused_yet, ranked_doors_unused_yet
     ):
         # Only generate if manual mapping is chosen and there are doors
         if manual_map_choice != 'yes' or not all_doors_from_store_data:
@@ -350,65 +367,86 @@ def register_graph_callbacks(app):
         else:
             existing_classifications = existing_saved_classifications or {}
 
-        # Define options for dropdowns/radio items (these should align with your model's expectations)
+        # Define options for dropdowns/radio items
         floor_options = [{'label': str(i), 'value': str(i)} for i in range(1, (num_floors or 1) + 1)]
-        security_options = [
-            {'label': 'Green (Public)', 'value': 'green'},
-            {'label': 'Yellow (Semi-Restricted)', 'value': 'yellow'},
-            {'label': 'Red (Restricted)', 'value': 'red'}
-        ]
         
-        # Add a header row for the table
-        table_header = html.Thead(html.Tr([
-            html.Th("Door ID", style={'textAlign': 'left', 'padding': '8px'}),
-            html.Th("Floor", style={'padding': '8px'}),
-            html.Th("Entry/Exit", style={'padding': '8px'}),
-            html.Th("Stairway", style={'padding': '8px'}),
-            html.Th("Security Level", style={'padding': '8px'})
-        ], style={'backgroundColor': '#f2f2f2', 'borderBottom': '2px solid #ddd'}))
+        # Generate dbc.Row for each door
+        door_rows = []
+        # Add a header row
+        door_rows.append(
+            dbc.Row([
+                dbc.Col(html.B("Door ID"), width=3, className="text-start py-2"),
+                dbc.Col(html.B("Floor"), width=2, className="text-center py-2"),
+                dbc.Col(html.B("Entry/Exit"), width=2, className="text-center py-2"),
+                dbc.Col(html.B("Stairway"), width=2, className="text-center py-2"),
+                dbc.Col(html.B("Security"), width=3, className="text-center py-2"),
+            ], className="g-0 border-bottom fw-bold bg-light") # g-0 removes gutter
+        )
 
-        table_rows = []
-        for door_id in doors_to_classify: # Iterate through the sorted unique door IDs
+
+        for idx, door_id in enumerate(doors_to_classify): 
             # Pre-select values based on existing classifications
             current_classification = existing_classifications.get(door_id, {})
             pre_sel_floor = current_classification.get('floor', '1')
             pre_sel_is_ee = current_classification.get('is_ee', False)
             pre_sel_is_stair = current_classification.get('is_stair', False)
-            pre_sel_security = current_classification.get('security', 'green')
+            
+            # Map stored security string value back to slider integer value
+            pre_sel_security_val = current_classification.get('security', 'green') # Default to 'green'
+            pre_sel_security_slider_val = REVERSE_SECURITY_MAP.get(pre_sel_security_val, 1) # Default slider value 1 (green)
 
-            table_rows.append(
-                html.Tr([
-                    html.Td(door_id, style={'fontWeight': 'bold', 'padding': '8px'}),
-                    html.Td(dcc.Dropdown(
+            door_rows.append(
+                dbc.Row([
+                    dbc.Col(html.Label(door_id, style={"fontWeight": "600", "textAlign": "left"}), width=3, className="d-flex align-items-center"),
+                    
+                    # Floor Dropdown
+                    dbc.Col(dcc.Dropdown(
                         id={'type': 'floor-select', 'index': door_id},
                         options=floor_options,
                         value=pre_sel_floor,
                         clearable=False,
-                        style={'width': '100px'}
-                    ), style={'padding': '8px'}),
-                    html.Td(dcc.Checklist(
+                        style={"width": "100%"}
+                    ), width=2, className="d-flex align-items-center"),
+
+                    # Entry/Exit Checkbox
+                    dbc.Col(dcc.Checklist(
                         id={'type': 'is-ee-check', 'index': door_id},
-                        options=[{'label': '', 'value': 'is_ee'}],
+                        options=[{'label': ' Entry/Exit', 'value': 'is_ee'}], # Added label for clarity
                         value=['is_ee'] if pre_sel_is_ee else [],
-                        style={'textAlign': 'center', 'padding': '8px'}
-                    )),
-                    html.Td(dcc.Checklist(
+                        inline=True, # Display label next to checkbox
+                        className="form-check-inline" # dbc styling
+                    ), width=2, className="d-flex align-items-center justify-content-center"),
+
+                    # Stairway Checkbox
+                    dbc.Col(dcc.Checklist(
                         id={'type': 'is-stair-check', 'index': door_id},
-                        options=[{'label': '', 'value': 'is_stair'}],
+                        options=[{'label': ' Stairway', 'value': 'is_stair'}], # Added label for clarity
                         value=['is_stair'] if pre_sel_is_stair else [],
-                        style={'textAlign': 'center', 'padding': '8px'}
-                    )),
-                    html.Td(dcc.RadioItems(
-                        id={'type': 'security-level-radio', 'index': door_id},
-                        options=security_options,
-                        value=pre_sel_security,
-                        inline=True,
-                        labelStyle={'display': 'inline-block', 'marginRight': '5px'},
-                        style={'width': '200px', 'padding': '8px'}
-                    ))
-                ], style={'borderBottom': '1px solid #eee'} if door_id != doors_to_classify[-1] else {}) # Add border except last row
+                        inline=True, # Display label next to checkbox
+                        className="form-check-inline" # dbc styling
+                    ), width=2, className="d-flex align-items-center justify-content-center"),
+
+                    # Security Level Slider
+                    dbc.Col(dcc.Slider(
+                        id={"type": "security-level-slider", "index": door_id}, # Use new ID type for slider
+                        min=0,
+                        max=3,
+                        step=1,
+                        value=pre_sel_security_slider_val,
+                        marks={k: {
+                            "label": v["label"],
+                            "style": {
+                                "color": v["color"],
+                                "fontWeight": "600",
+                                "fontSize": "10px" # Smaller font for slider marks
+                            }
+                        } for k, v in SECURITY_LEVELS_SLIDER_MAP.items()},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                        className="mb-0 mt-3" # Adjusted margin for slider
+                    ), width=3, className="d-flex align-items-center"),
+                ], className="g-0 mb-3 border-bottom pb-3") # g-0 removes gutter between cols
             )
         
-        print(f"DEBUG: Generated classification table with {len(table_rows)-1} door rows.") # -1 for header
-        return html.Table([table_header, html.Tbody(table_rows)], 
-                           style={'width': '100%', 'borderCollapse': 'collapse', 'border': '1px solid #ddd'})
+        print(f"DEBUG: Generated classification table with {len(door_rows)-1} door rows (excluding header).") 
+        # Return the list of dbc.Row components, not an html.Table
+        return door_rows
