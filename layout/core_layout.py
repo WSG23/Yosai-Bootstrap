@@ -1,6 +1,14 @@
 from dash import html, dcc
 import dash_cytoscape as cyto
-from styles import *  # Imports all style variables
+from styles.graph_styles import (
+    upload_icon_img_style,
+    upload_style_initial,
+    centered_graph_box_style,
+    cytoscape_inside_box_style,
+    tap_node_data_centered_style,
+    actual_default_stylesheet_for_graph
+)
+
 from config import MAIN_LOGO_PATH, ICON_UPLOAD_DEFAULT
 
 def create_main_layout(app_instance): 

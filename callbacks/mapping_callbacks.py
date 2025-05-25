@@ -5,11 +5,11 @@ import json
 def register_mapping_callbacks(app):
     @app.callback(
         [
-            Output('mapping-ui-container', 'style'),
-            Output('entrance-verification-ui-section', 'style'),
+            Output('mapping-ui-section', 'style'),  
+            Output('entrance-verification-ui-section', 'style', allow_duplicate=True),
             Output('column-mapping-store', 'data'),
-            Output('processing-status', 'children'),
-            Output('confirm-header-map-button', 'style')
+            Output('processing-status', 'children', allow_duplicate=True),
+            Output('confirm-header-map-button', 'style', allow_duplicate=True),
         ],
         Input('confirm-header-map-button', 'n_clicks'),
         [
@@ -30,9 +30,16 @@ def register_mapping_callbacks(app):
             if dropdown_value
         }
 
-        updated_mappings = existing_json or {}
+        if isinstance(existing_json, str):
+            updated_mappings = json.loads(existing_json)
+        else:
+            updated_mappings = existing_json or {}
+
+
         header_key = json.dumps(sorted(csv_headers))
         updated_mappings[header_key] = mapping
+
+
 
         return (
             {'display': 'none'},                  # Hide mapping UI
@@ -41,3 +48,25 @@ def register_mapping_callbacks(app):
             "Step 2: Set Classification Options", # Update status message
             {'display': 'none'}                   # Hide confirm button again
         )
+
+    # This is the new callback to control visibility of classification tools
+    @app.callback(
+        [
+            Output('num-floors-input-container', 'style'),
+            Output('door-classification-table-container', 'style'),
+            Output('entrance-suggestion-controls', 'style')
+        ],
+        Input('manual-map-toggle', 'value'),
+        prevent_initial_call=False # Allows the callback to run on app load
+    )
+    def toggle_classification_tools(manual_map_choice):
+        # Define the styles for visibility
+        hide_style = {'display': 'none', 'marginTop': '10px'}
+        show_style = {'display': 'block', 'marginTop': '10px'}
+
+        # If 'yes' is selected, show all three containers
+        if manual_map_choice == 'yes':
+            return show_style, show_style, show_style
+        # Otherwise (if 'no' is selected or initial load), hide them
+        else:
+            return hide_style, hide_style, hide_style

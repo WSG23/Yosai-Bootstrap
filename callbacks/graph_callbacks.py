@@ -1,23 +1,56 @@
 import dash
-from dash import Input, Output, State, html
+from dash import Input, Output, State, html, dcc
 from dash.dependencies import ALL
 import json
 import pandas as pd
 import traceback
+import sys, os
 
-from graph_config import GRAPH_PROCESSING_CONFIG
-from styles import actual_default_stylesheet_for_graph
+# This is important for module imports. Ensure this path is correct relative to your project root.
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..')) # Go up one level from 'callbacks'
+sys.path.append(project_root)
 
-from data_io.csv_loader import load_csv_event_log
-from data_io.file_utils import decode_uploaded_csv  # 🔹 NEW
+
+from processing.graph_config import GRAPH_PROCESSING_CONFIG, UI_STYLES
+from styles.graph_styles import actual_default_stylesheet_for_graph
+from data_io.csv_loader import load_csv_event_log # This function is key
+from data_io.file_utils import decode_uploaded_csv
 from processing.onion_model import run_onion_model_processing
 from processing.cytoscape_prep import prepare_cytoscape_elements
-from graph_config import GRAPH_PROCESSING_CONFIG, UI_STYLES
-from style_config import UI_VISIBILITY, UI_COMPONENTS
+from constants.constants import REQUIRED_INTERNAL_COLUMNS 
 
-
+def fuzzy_match_columns(csv_columns, internal_keys):
+    """Best-effort fuzzy match between internal keys and CSV column names."""
+    from difflib import get_close_matches
+    mapping = {}
+    for internal_key, expected_label in internal_keys.items():
+        # Prioritize matching display labels directly in CSV for mapping, as load_csv_event_log will expect them.
+        if expected_label in csv_columns:
+            mapping[expected_label] = internal_key # Map CSV column (display_name) to internal key
+        # Fallback to internal key if display label not found
+        elif internal_key in csv_columns:
+            mapping[internal_key] = internal_key # Map CSV column (internal_key) to internal key
+        else:
+            # Fuzzy match on expected label
+            matches = get_close_matches(expected_label, csv_columns, n=1, cutoff=0.6)
+            if matches:
+                mapping[matches[0]] = internal_key
+            else:
+                # Fuzzy match on internal key
+                matches2 = get_close_matches(internal_key, csv_columns, n=1, cutoff=0.6)
+                if matches2:
+                    mapping[matches2[0]] = internal_key
+    return mapping
 
 def register_graph_callbacks(app):
+    # Define display names for clarity and consistency within this file
+    DOORID_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['DoorID']
+    USERID_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['UserID']
+    EVENTTYPE_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['EventType']
+    TIMESTAMP_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['Timestamp']
+
+
     @app.callback(
         [
             Output('onion-graph', 'elements', allow_duplicate=True),
@@ -60,25 +93,25 @@ def register_graph_callbacks(app):
                              security_values, security_ids, num_floors_from_store, manual_map_choice,
                              csv_headers, existing_saved_classifications_json):
 
-        # UI styles
         hide_style = UI_STYLES['hide']
         show_style = UI_STYLES['show_block']
         show_stats_style = UI_STYLES['show_flex_stats']
-
 
         current_yosai_style = hide_style
         graph_elements = []
         status_msg = "Processing..."
 
-        # Init stats
         s_tae, s_er, s_sr, s_dd, s_nd, s_ut = "0", "N/A", "N/A", "0", "0", "0"
         s_adt = []
 
-        if not n_clicks or not file_contents_b64 or not stored_column_mapping_json:
+        if not n_clicks or not file_contents_b64:
             return graph_elements, "Missing data or button not clicked.", hide_style, hide_style, hide_style, s_tae, s_er, s_sr, s_dd, s_nd, s_ut, s_adt, dash.no_update, stored_column_mapping_json
 
-        # Load manual classifications
-        all_manual_classifications = json.loads(existing_saved_classifications_json) if existing_saved_classifications_json else {}
+        if isinstance(existing_saved_classifications_json, str):
+            all_manual_classifications = json.loads(existing_saved_classifications_json)
+        else:
+            all_manual_classifications = existing_saved_classifications_json or {}
+
         current_door_classifications = {}
         confirmed_entrances = []
 
@@ -109,23 +142,90 @@ def register_graph_callbacks(app):
             status_msg += " Using heuristic for entrances."
 
         try:
-            # Decode and load CSV
-            csv_io = decode_uploaded_csv(file_contents_b64)
-            all_column_mappings = json.loads(stored_column_mapping_json)
-            key = json.dumps(sorted(csv_headers))
-            current_mapping = all_column_mappings.get(key, {})
+            # Re-decode CSV stream for load_csv_event_log. Each time it's used, a new stream is needed.
+            csv_io_for_loader = decode_uploaded_csv(file_contents_b64)
+            
+            if isinstance(stored_column_mapping_json, str):
+                all_column_mappings = json.loads(stored_column_mapping_json)
+            else:
+                all_column_mappings = stored_column_mapping_json or {}
 
-            if not current_mapping:
-                raise ValueError("No column mapping found.")
+            header_key = json.dumps(sorted(csv_headers)) if csv_headers else None
+            
+            # current_mapping_csv_to_internal will be CSV_Header -> internal_key as stored by mapping_callbacks
+            current_mapping_csv_to_internal = {} 
 
-            df_loaded = load_csv_event_log(csv_io, current_mapping)
+            # Attempt to load stored mapping, but ensure it covers all required internal keys
+            stored_map = all_column_mappings.get(header_key) if header_key else None
+            if isinstance(stored_map, dict) and set(stored_map.values()) >= set(REQUIRED_INTERNAL_COLUMNS.keys()):
+                current_mapping_csv_to_internal = stored_map
+            else:
+                if stored_map:
+                    print("🤖 Stored mapping incomplete, falling back to fuzzy matching")
+                
+                # When fuzzy matching, we need the actual CSV column names to match against
+                temp_csv_io_peek = decode_uploaded_csv(file_contents_b64) # Fresh stream for peeking
+                df_peek_columns = pd.read_csv(temp_csv_io_peek, nrows=0).columns.tolist()
+                current_mapping_csv_to_internal = fuzzy_match_columns(df_peek_columns, REQUIRED_INTERNAL_COLUMNS)
+                print("🤖 Fuzzy Mapping Used (CSV Header -> Internal Key):", current_mapping_csv_to_internal)
 
-            # Merge config
+            if not current_mapping_csv_to_internal:
+                raise ValueError("No column mapping found. Please ensure all required columns are mapped in the previous step.")
+
+            # Validate that all REQUIRED_INTERNAL_COLUMNS internal keys are targeted by the mapping
+            required_internal_keys_set = set(REQUIRED_INTERNAL_COLUMNS.keys())
+            mapped_internal_keys_set = set(current_mapping_csv_to_internal.values())
+            if not required_internal_keys_set.issubset(mapped_internal_keys_set):
+                missing_internal_keys = required_internal_keys_set - mapped_internal_keys_set
+                raise ValueError(f"Missing mapped internal keys: {', '.join(missing_internal_keys)}. Please ensure all essential columns are mapped in the dropdowns.")
+
+            # ✅ CRITICAL CHANGE: Prepare the mapping for `load_csv_event_log` to target DISPLAY NAMES.
+            # This is the crucial step. We are now sure `load_csv_event_log` expects display names for its internal checks.
+            mapping_for_loader_csv_to_display = {}
+            for csv_col_name, internal_key in current_mapping_csv_to_internal.items():
+                if internal_key in REQUIRED_INTERNAL_COLUMNS:
+                    display_name = REQUIRED_INTERNAL_COLUMNS[internal_key]
+                    mapping_for_loader_csv_to_display[csv_col_name] = display_name
+                else:
+                    # If an internal_key from current_mapping_csv_to_internal isn't in REQUIRED_INTERNAL_COLUMNS,
+                    # keep it as the internal_key itself as a fallback, or decide to drop it.
+                    mapping_for_loader_csv_to_display[csv_col_name] = internal_key
+
+            print(f"Mapping passed to load_csv_event_log (CSV Header -> Display Name): {mapping_for_loader_csv_to_display}")
+
+            # ✅ Now, load_csv_event_log should return a DataFrame with display-named columns.
+            df_final = load_csv_event_log(csv_io_for_loader, mapping_for_loader_csv_to_display)
+
+            if df_final is None:
+                # This error now specifically points to an issue within load_csv_event_log
+                # given it's supposed to return display-named columns.
+                raise ValueError(
+                    "Failed to load CSV for final processing. The `load_csv_event_log` function returned None. "
+                    "This strongly suggests an issue within `load_csv_event_log` itself, "
+                    "likely due to it not finding expected display-named columns after applying the mapping. "
+                    "Consider inspecting the `load_csv_event_log` function in `data_io/csv_loader.py`."
+                )
+
+            # --- Final Validation (already present, but good to keep) ---
+            missing_display_columns_in_final_df = [
+                display_name for internal_key, display_name in REQUIRED_INTERNAL_COLUMNS.items()
+                if display_name not in df_final.columns
+            ]
+
+            if missing_display_columns_in_final_df:
+                raise ValueError(
+                    f"Final DataFrame is missing critical display columns AFTER `load_csv_event_log` processing: "
+                    f"{', '.join(missing_display_columns_in_final_df)}. "
+                    f"Current DataFrame columns: {df_final.columns.tolist()}. "
+                    f"This indicates that `load_csv_event_log` did not correctly rename columns to display names."
+                )
+
+            # --- Data Processing and Model Generation (using df_final) ---
             config = GRAPH_PROCESSING_CONFIG.copy()
             config['num_floors'] = num_floors_from_store or GRAPH_PROCESSING_CONFIG['num_floors']
 
             enriched_df, device_attrs, path_viz, all_paths = run_onion_model_processing(
-                df_loaded.copy(),
+                df_final.copy(), # Pass df_final (with display names) to run_onion_model_processing
                 config,
                 confirmed_official_entrances=confirmed_entrances,
                 detailed_door_classifications=current_door_classifications
@@ -136,22 +236,30 @@ def register_graph_callbacks(app):
                 graph_elements = nodes + edges
                 current_yosai_style = show_style if graph_elements else hide_style
                 status_msg = "Graph generated!" if graph_elements else "Processed, but no graph elements to display."
-                s_tae = f"{len(df_loaded):,}"
+                s_tae = f"{len(df_final):,}" # Use df_final for total events if enriched_df is a subset
 
-                if not enriched_df.empty and 'Timestamp' in enriched_df.columns:
-                    min_d, max_d = enriched_df['Timestamp'].min(), enriched_df['Timestamp'].max()
+                # --- Update stats calculations to use display names ---
+                if not enriched_df.empty and 'Timestamp (Event Time)' in enriched_df.columns:
+                    # Ensure the timestamp column is datetime type for operations
+                    if not pd.api.types.is_datetime64_any_dtype(enriched_df['Timestamp (Event Time)']):
+                        enriched_df['Timestamp (Event Time)'] = pd.to_datetime(enriched_df['Timestamp (Event Time)'], errors='coerce')
+
+                    min_d, max_d = enriched_df['Timestamp (Event Time)'].min(), enriched_df['Timestamp (Event Time)'].max()
                     s_er = f"{min_d.strftime('%d.%m.%Y')} - {max_d.strftime('%d.%m.%Y')}" if pd.notna(min_d) and pd.notna(max_d) else "N/A"
                     s_sr = f"Date range: {s_er}"
-                    if 'Date' in enriched_df.columns:
-                        s_dd = f"Days: {enriched_df['Date'].nunique()}"
-                    if 'UserID' in enriched_df.columns:
-                        s_ut = f"Tokens: {enriched_df['UserID'].nunique()}"
-                    if 'DoorID' in enriched_df.columns:
+                    
+                    # Calculate unique days from the timestamp column directly
+                    s_dd = f"Days: {enriched_df['Timestamp (Event Time)'].dt.date.nunique()}"
+                    
+                    if 'UserID (Person Identifier)' in enriched_df.columns:
+                        s_ut = f"Tokens: {enriched_df['UserID (Person Identifier)'].nunique()}"
+                    
+                    if 'DoorID (Device Name)' in enriched_df.columns:
                         s_adt = [html.Tr([html.Td(d), html.Td(f"{c:,}", style={'textAlign': 'right'})])
-                                 for d, c in enriched_df['DoorID'].value_counts().nlargest(5).items()]
+                                 for d, c in enriched_df['DoorID (Device Name)'].value_counts().nlargest(5).items()]
 
-                if device_attrs is not None and 'DoorID' in device_attrs.columns:
-                    s_nd = f"Devices: {device_attrs['DoorID'].nunique()}"
+                if device_attrs is not None and 'DoorID (Device Name)' in device_attrs.columns:
+                    s_nd = f"Devices: {device_attrs['DoorID (Device Name)'].nunique()}"
 
                 if not s_adt:
                     s_adt = [html.Tr([html.Td("N/A", colSpan=2)])]
@@ -185,7 +293,7 @@ def register_graph_callbacks(app):
         prevent_initial_call=True
     )
     def handle_node_tap_interaction_final(tap_data, current_elements, current_stylesheet):
-        return actual_default_stylesheet_for_graph  # Placeholder
+        return actual_default_stylesheet_for_graph
 
     @app.callback(
         Output('tap-node-data-output', 'children'),
@@ -203,6 +311,104 @@ def register_graph_callbacks(app):
             if data.get('is_stair'):
                 details.append("Type: Staircase")
             if 'security_level' in data:
-                details.append(f"Security: {data['security_level']}")
+                details.append(f"Security: {data['security_level']}" )
             return " | ".join(details)
         return "Upload CSV, map headers, (optionally classify doors), then Confirm & Generate. Tap a node for its details."
+
+    # --- NEW CALLBACK TO GENERATE DOOR CLASSIFICATION TABLE CONTENT ---
+    @app.callback(
+        Output('door-classification-table', 'children'), # This is the target div
+        [
+            Input('confirm-header-map-button', 'n_clicks'), # Trigger when mapping confirmed
+            Input('manual-map-toggle', 'value'),            # Trigger when user selects Yes/No for manual map
+            Input('num-floors-input', 'value'),             # If changing floors affects options
+            Input('top-n-entrances-input', 'value'),        # If 'show more' influences displayed doors
+            Input('show-more-entrances-button', 'n_clicks') # Explicit button click for "show more"
+        ],
+        [
+            State('all-doors-from-csv-store', 'data'),      # List of all doors extracted
+            State('manual-door-classifications-store', 'data'), # Existing classifications
+            State('current-entrance-offset-store', 'data'), # For pagination/show more
+            State('ranked-doors-store', 'data')              # If you have pre-ranked doors for suggestions
+        ],
+        prevent_initial_call=True # Only generate when inputs change
+    )
+    def generate_door_classification_table_content(
+        n_clicks_confirm_map, manual_map_choice, num_floors, top_n_entrances, n_clicks_show_more_button,
+        all_doors_from_store_data, existing_saved_classifications, current_offset_unused_yet, ranked_doors_unused_yet # Unused states can be removed if not needed for first pass
+    ):
+        # Only generate if manual mapping is chosen and there are doors
+        if manual_map_choice != 'yes' or not all_doors_from_store_data:
+            print("DEBUG: Not in manual mode or no doors available for classification table.")
+            return [] # Return empty list if not in manual mode or no doors
+
+        doors_to_classify = sorted(all_doors_from_store_data) # Use the pre-stored list of all doors
+
+        # Load existing classifications if any
+        if isinstance(existing_saved_classifications, str):
+            existing_classifications = json.loads(existing_saved_classifications)
+        else:
+            existing_classifications = existing_saved_classifications or {}
+
+        # Define options for dropdowns/radio items (these should align with your model's expectations)
+        floor_options = [{'label': str(i), 'value': str(i)} for i in range(1, (num_floors or 1) + 1)]
+        security_options = [
+            {'label': 'Green (Public)', 'value': 'green'},
+            {'label': 'Yellow (Semi-Restricted)', 'value': 'yellow'},
+            {'label': 'Red (Restricted)', 'value': 'red'}
+        ]
+        
+        # Add a header row for the table
+        table_header = html.Thead(html.Tr([
+            html.Th("Door ID", style={'textAlign': 'left', 'padding': '8px'}),
+            html.Th("Floor", style={'padding': '8px'}),
+            html.Th("Entry/Exit", style={'padding': '8px'}),
+            html.Th("Stairway", style={'padding': '8px'}),
+            html.Th("Security Level", style={'padding': '8px'})
+        ], style={'backgroundColor': '#f2f2f2', 'borderBottom': '2px solid #ddd'}))
+
+        table_rows = []
+        for door_id in doors_to_classify: # Iterate through the sorted unique door IDs
+            # Pre-select values based on existing classifications
+            current_classification = existing_classifications.get(door_id, {})
+            pre_sel_floor = current_classification.get('floor', '1')
+            pre_sel_is_ee = current_classification.get('is_ee', False)
+            pre_sel_is_stair = current_classification.get('is_stair', False)
+            pre_sel_security = current_classification.get('security', 'green')
+
+            table_rows.append(
+                html.Tr([
+                    html.Td(door_id, style={'fontWeight': 'bold', 'padding': '8px'}),
+                    html.Td(dcc.Dropdown(
+                        id={'type': 'floor-select', 'index': door_id},
+                        options=floor_options,
+                        value=pre_sel_floor,
+                        clearable=False,
+                        style={'width': '100px'}
+                    ), style={'padding': '8px'}),
+                    html.Td(dcc.Checklist(
+                        id={'type': 'is-ee-check', 'index': door_id},
+                        options=[{'label': '', 'value': 'is_ee'}],
+                        value=['is_ee'] if pre_sel_is_ee else [],
+                        style={'textAlign': 'center', 'padding': '8px'}
+                    )),
+                    html.Td(dcc.Checklist(
+                        id={'type': 'is-stair-check', 'index': door_id},
+                        options=[{'label': '', 'value': 'is_stair'}],
+                        value=['is_stair'] if pre_sel_is_stair else [],
+                        style={'textAlign': 'center', 'padding': '8px'}
+                    )),
+                    html.Td(dcc.RadioItems(
+                        id={'type': 'security-level-radio', 'index': door_id},
+                        options=security_options,
+                        value=pre_sel_security,
+                        inline=True,
+                        labelStyle={'display': 'inline-block', 'marginRight': '5px'},
+                        style={'width': '200px', 'padding': '8px'}
+                    ))
+                ], style={'borderBottom': '1px solid #eee'} if door_id != doors_to_classify[-1] else {}) # Add border except last row
+            )
+        
+        print(f"DEBUG: Generated classification table with {len(table_rows)-1} door rows.") # -1 for header
+        return html.Table([table_header, html.Tbody(table_rows)], 
+                           style={'width': '100%', 'borderCollapse': 'collapse', 'border': '1px solid #ddd'})

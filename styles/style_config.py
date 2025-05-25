@@ -1,4 +1,4 @@
-# style_config.py
+# styles/style_config.py
 
 UI_VISIBILITY = {
     'hide': {'display': 'none'},

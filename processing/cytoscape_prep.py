@@ -1,6 +1,16 @@
-# yosai_intel_dashboard/processing/cytoscape_prep.py
 import pandas as pd
 import numpy as np
+
+# Assuming you have a constants file for display names as well
+# Make sure this import path is correct relative to your project structure
+from constants import REQUIRED_INTERNAL_COLUMNS 
+
+# Define display names for clarity and consistency
+DOORID_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['DoorID']
+TIMESTAMP_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['Timestamp'] # Added for completeness if needed elsewhere
+USERID_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['UserID']     # Added for completeness if needed elsewhere
+EVENTTYPE_COL_DISPLAY = REQUIRED_INTERNAL_COLUMNS['EventType'] # Added for completeness if needed elsewhere
+
 
 def prepare_path_visualization_data(all_paths_df, source_col='SourceDoor',
                                     target_col='TargetDoor', frequency_col='TransitionFrequency'):
@@ -34,23 +44,37 @@ def prepare_path_visualization_data(all_paths_df, source_col='SourceDoor',
 
 
 def prepare_cytoscape_elements(device_attributes_df, path_viz_data_df, all_paths_df=None, target_floor=None):
-    # ... (This function remains as it was from the last full code I provided, with floor label logic)
-    # ... (Ensure it correctly uses the columns from the new device_attributes_df)
+    print("\nPreparing Cytoscape Elements (nodes and edges)...")
     nodes, edges = [], []
+    
     if device_attributes_df is None or device_attributes_df.empty:
-        print("DEBUG: device_attributes_df empty in prepare_cytoscape_elements.")
+        print("DEBUG: device_attributes_df empty in prepare_cytoscape_elements. Cannot create nodes.")
         return [], []
 
+    # ✅ CRITICAL FIX: Use the correct display name for DoorID column
+    if DOORID_COL_DISPLAY not in device_attributes_df.columns:
+        print(f"Error: '{DOORID_COL_DISPLAY}' column not found in device_attributes_df. Columns: {device_attributes_df.columns.tolist()}")
+        return [], []
+
+    # Use the display name consistently
+    current_device_ids = set(device_attributes_df[DOORID_COL_DISPLAY].astype(str).unique())
+    print(f"DEBUG: Found {len(current_device_ids)} unique devices for nodes.")
+
+
     dev_layers = {}
-    if 'DoorID' in device_attributes_df.columns and 'FinalGlobalDeviceDepth' in device_attributes_df.columns:
+    # ✅ Use DOORID_COL_DISPLAY here
+    if DOORID_COL_DISPLAY in device_attributes_df.columns and 'FinalGlobalDeviceDepth' in device_attributes_df.columns:
         if 'Floor' not in device_attributes_df.columns: # defensive
             device_attributes_df['Floor'] = 'N/A'
         device_attributes_df['Floor'] = device_attributes_df['Floor'].astype(str).fillna('N/A')
-        dev_layers = device_attributes_df.set_index('DoorID')['FinalGlobalDeviceDepth'].to_dict()
+        # ✅ Use DOORID_COL_DISPLAY here
+        dev_layers = device_attributes_df.set_index(DOORID_COL_DISPLAY)['FinalGlobalDeviceDepth'].to_dict()
 
     dev_mcn = {}
-    if 'DoorID' in device_attributes_df.columns and 'MostCommonNextDoor' in device_attributes_df.columns:
-        dev_mcn = device_attributes_df.set_index('DoorID')['MostCommonNextDoor'].to_dict()
+    # ✅ Use DOORID_COL_DISPLAY here
+    if DOORID_COL_DISPLAY in device_attributes_df.columns and 'MostCommonNextDoor' in device_attributes_df.columns:
+        # ✅ Use DOORID_COL_DISPLAY here
+        dev_mcn = device_attributes_df.set_index(DOORID_COL_DISPLAY)['MostCommonNextDoor'].to_dict()
 
     if not device_attributes_df.empty and 'FinalGlobalDeviceDepth' in device_attributes_df.columns:
         valid_layers_depths = device_attributes_df['FinalGlobalDeviceDepth'].dropna()
@@ -70,16 +94,19 @@ def prepare_cytoscape_elements(device_attributes_df, path_viz_data_df, all_paths
             nodes.append({'data': {'id': f'layer_{lv_int}', 'label': layer_parent_label, 'is_layer_parent': True, 'layer_num': lv_int}})
 
     for _, r in device_attributes_df.iterrows():
-        if 'DoorID' in r and pd.notna(r.get('FinalGlobalDeviceDepth')) and r['FinalGlobalDeviceDepth'] > 0:
+        # ✅ Use DOORID_COL_DISPLAY here
+        if DOORID_COL_DISPLAY in r and pd.notna(r.get('FinalGlobalDeviceDepth')) and r['FinalGlobalDeviceDepth'] > 0:
             l_assign = int(r['FinalGlobalDeviceDepth'])
-            door_id_str = str(r['DoorID'])
+            # ✅ Use DOORID_COL_DISPLAY here
+            door_id_str = str(r[DOORID_COL_DISPLAY])
             node_data = {'id': door_id_str, 'label': door_id_str, 'layer': l_assign, 'parent': f"layer_{l_assign}",
                          'is_entrance': bool(r.get('IsOfficialEntrance', False)),
                          'is_critical': bool(r.get('IsGloballyCritical', False)),
                          'floor': str(r.get('Floor', 'N/A')),
                          'is_stair': bool(r.get('IsStaircase', False)),
                          'security_level': str(r.get('SecurityLevel', 'green'))}
-            mcn_val = dev_mcn.get(r['DoorID']) # Use .get for safety
+            # ✅ Use DOORID_COL_DISPLAY here
+            mcn_val = dev_mcn.get(r[DOORID_COL_DISPLAY]) # Use .get for safety
             if pd.notna(mcn_val): node_data['most_common_next'] = str(mcn_val)
             nodes.append({'data': node_data})
 
@@ -88,12 +115,14 @@ def prepare_cytoscape_elements(device_attributes_df, path_viz_data_df, all_paths
         if path_viz_data_df is not None and not path_viz_data_df.empty and 'Door1' in path_viz_data_df.columns and 'Door2' in path_viz_data_df.columns and 'PathWidth' in path_viz_data_df.columns:
              w_map = {(tuple(sorted((str(r['Door1']),str(r['Door2']))))): r['PathWidth'] for _,r in path_viz_data_df.iterrows()}
         
-        current_device_ids = set(device_attributes_df['DoorID'].astype(str).unique())
-        for _, r_edge in all_paths_df.iterrows(): # Renamed r to r_edge to avoid conflict if debugging
+        # current_device_ids is already using DOORID_COL_DISPLAY
+        # The check 's not in current_device_ids or t not in current_device_ids' handles consistency.
+        for _, r_edge in all_paths_df.iterrows(): 
             s, t = str(r_edge['SourceDoor']), str(r_edge['TargetDoor'])
-            if s not in current_device_ids or t not in current_device_ids: continue
+            if s not in current_device_ids or t not in current_device_ids: continue # Only add edges for existing nodes
             
-            s_l_raw, t_l_raw = dev_layers.get(s), dev_layers.get(t)
+            # ✅ Use DOORID_COL_DISPLAY here
+            s_l_raw, t_l_raw = dev_layers.get(s), dev_layers.get(t) 
             s_l, t_l = (int(val) if pd.notna(val) else None for val in [s_l_raw, t_l_raw])
             
             e_w_raw = w_map.get(tuple(sorted((s,t))), 1.0)
@@ -103,8 +132,8 @@ def prepare_cytoscape_elements(device_attributes_df, path_viz_data_df, all_paths
             a_f = int(a_f_raw) if pd.notna(a_f_raw) else 0
             
             is_to_inner = bool(r_edge.get('is_to_inner_default', (t_l and s_l and t_l > s_l)))
-            if s_l and t_l and s_l > 0 and t_l > 0:
+            if s_l is not None and t_l is not None and s_l > 0 and t_l > 0: # Ensure layers are valid numbers
                 edges.append({'data':{'source':s,'target':t,'id':f"{s}_to_{t}_{a_f}",'width':e_w,'actual_frequency':a_f,'source_layer':s_l,'target_layer':t_l, 'is_to_inner_default': is_to_inner}})
     
-    print(f"Cytoscape Prep: Prepared {len(nodes)} nodes, {len(edges)} edges.")
+    print(f"DEBUG: Cytoscape Prep: Prepared {len(nodes)} nodes, {len(edges)} edges.")
     return nodes, edges
