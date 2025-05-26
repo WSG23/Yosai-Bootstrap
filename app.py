@@ -2,6 +2,8 @@ import dash
 import sys, os
 import dash_bootstrap_components as dbc # ✅ NEW IMPORT
 
+
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from layout.core_layout import create_main_layout
@@ -11,15 +13,17 @@ app = dash.Dash(
     __name__,
     suppress_callback_exceptions=True,
     assets_folder='assets',
-    external_stylesheets=[dbc.themes.MINTY] # ✅ ADD BOOTSTRAP THEME
+    # ✅ CHANGE THIS LINE TO A DARK BOOTSTRAP THEME
+    external_stylesheets=[dbc.themes.DARKLY] # Or dbc.themes.CYBORG, dbc.themes.SLATE, dbc.themes.SUPERHERO
 )
+
 server = app.server
 
 # Assets
-ICON_UPLOAD_DEFAULT = app.get_asset_url('upload_csv_file_icon.png') # Using corrected filenames
-ICON_UPLOAD_SUCCESS = app.get_asset_url('upload_csv_file_icon_success.png')
-ICON_UPLOAD_FAIL = app.get_asset_url('upload_csv_file_icon_fail.png')
-MAIN_LOGO_PATH = app.get_asset_url('yosai_logo_name_black.png')
+ICON_UPLOAD_DEFAULT = app.get_asset_url('upload_file_csv_icon.png') # Using corrected filenames
+ICON_UPLOAD_SUCCESS = app.get_asset_url('upload_file_csv_icon_success.png')
+ICON_UPLOAD_FAIL = app.get_asset_url('upload_file_csv_icon_fail.png')
+MAIN_LOGO_PATH = app.get_asset_url('yosai_logo_name_white.png')
 
 app.layout = create_main_layout(
     app_instance=app,
